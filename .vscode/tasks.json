@@ -5,6 +5,10 @@
             "label": "Compile",
             "type": "shell",
             "command": "${workspaceFolder}\\build",
+            "args": [
+                "--flag",
+                "-fdiagnostics-absolute-paths"
+            ],
             "group": {
                 "kind": "build",
                 "isDefault": true
