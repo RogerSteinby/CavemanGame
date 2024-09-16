@@ -1,0 +1,3 @@
+This file contains a list of known issues with the game.
+
+- Inconsistant character movement.
