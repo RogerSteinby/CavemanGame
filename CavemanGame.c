@@ -3,23 +3,25 @@
 
 // constants
 const int TILE_WIDTH = 8;
+const int TILE_RADIUS_X = 40;
+const int TILE_RADIUS_Y = 20;
+const float TARGET_RADIUS = 16.0f;
 
 // Convert world coordinates to tile coordinates
 float world_pos_to_tile_pos(float world_pos) {
-	float pos = (world_pos / (float)TILE_WIDTH);
+	float pos = floorf(world_pos / (float)TILE_WIDTH);
 	return floor(pos);
 }
 
 float tile_pos_to_world_pos(int tile_pos) {
-	float pos = ((float)tile_pos * (float)TILE_WIDTH) - ((float)TILE_WIDTH * 0.5f);
+	float pos = ((float)tile_pos * (float)TILE_WIDTH);
 	return pos;
 }
 
 Vector2 round_v2_to_tile_pos(Vector2 v) {
-	Vector2 pos = v2(0, 0);
-	pos.x = tile_pos_to_world_pos(world_pos_to_tile_pos(v.x));
-	pos.y = tile_pos_to_world_pos(world_pos_to_tile_pos(v.y));
-	return pos;
+	v.x = tile_pos_to_world_pos(world_pos_to_tile_pos(v.x));
+	v.y = tile_pos_to_world_pos(world_pos_to_tile_pos(v.y));
+	return v;
 }
 
 // Returns true if a and b are within epsilon aka almost equal to each other
@@ -95,6 +97,12 @@ typedef struct World{
 } World;
 World* world = 0; // Initializes the world
 
+typedef struct WorldFrame {
+	Entity* selected_entity;
+} WorldFrame;
+
+WorldFrame world_frame;
+
 Entity* create_entity() {
 	Entity* entity_found = 0;
 	for (int i = 0; i <= MAX_ENTITIES; i++) {
@@ -123,7 +131,8 @@ void setup_rock(Entity* en) {
 	en->type = arch_rock;
 	en->pos = v2(get_random_float32_in_range(-200, 200), get_random_float32_in_range(-200, 200));
 	en->pos = round_v2_to_tile_pos(en->pos);
-	en->pos.y -= TILE_WIDTH * 0.5;
+	en->pos.x += TILE_WIDTH * 0.5f;
+	en->pos.y += TILE_WIDTH * 0.5f;
 	en->sprite_id = SPRITE_ROCK;
 	log("setup_rock: %f, %f", en->pos.x, en->pos.y);
 }
@@ -131,13 +140,14 @@ void setup_tree(Entity* en) {
 	en->type = arch_tree;
 	en->pos = v2(get_random_float32_in_range(-200, 200), get_random_float32_in_range(-200, 200));
 	en->pos = round_v2_to_tile_pos(en->pos);
-	en->pos.y -= TILE_WIDTH * 0.5;
+	en->pos.x += TILE_WIDTH * 0.5f;
+	en->pos.y += TILE_WIDTH * 0.5f;
 	en->sprite_id = SPRITE_TREE;
 }
 
 
 // Convert screen coordinates to world coordinates
-Vector2 screen_to_world() {
+Vector2 mouse_pos_to_world_pos() {
 	
 	// get mouse position, projection, view, and window dimensions
 	float mouseX = input_frame.mouse_x;
@@ -149,7 +159,7 @@ Vector2 screen_to_world() {
 
 	// normalize mouse coordinates
 	float ndcX = (mouseX / (windowWidth * 0.5f)) - 1.0f;
-	float ndcY = -(1.0f - (mouseY / (windowHeight * 0.5f)));
+	float ndcY = (mouseY / (windowHeight * 0.5f)) - 1.0f;
 
 	// Convert and store world coordinates in a vector (Vector4)
 	Vector4 worldPos = v4(ndcX, ndcY, 0, 1.0f); // convert to world coordinates
@@ -176,6 +186,10 @@ int entry(int argc, char **argv) {
 	window.clear_color = hex_to_rgba(0x4b692fff);
 
 	world = alloc(get_heap_allocator(), sizeof(World));	
+
+	// world constants
+	const Vector4 TILE_COL = v4(0.1, 0.1, 0.1, 0.1);
+	const Vector4 SELECTED_TILE_COL = v4(0.1, 0.1, 0.1, 0.5);
 
 	// load font
 	Gfx_Font *font = load_font_from_disk(STR("C:/windows/fonts/arial.ttf"), get_heap_allocator());
@@ -213,6 +227,7 @@ int entry(int argc, char **argv) {
 	while (!window.should_close) {
 		// should close the window if escape is pressed
 		reset_temporary_storage();
+		world_frame = (WorldFrame){0};
 
 		// should close the window if escape is pressed (doesnt work)
 		if (is_key_just_pressed(KEY_ESCAPE)) {
@@ -236,29 +251,45 @@ int entry(int argc, char **argv) {
 			draw_frame.camera_xform = m4_mul(draw_frame.camera_xform, m4_make_scale(v3(zoom, zoom, 1.0)));
 		}
 
-		Vector2 mouse_pos = screen_to_world();
-		int mouse_tile_x = world_pos_to_tile_pos(mouse_pos.x);
-		int mouse_tile_y = world_pos_to_tile_pos(mouse_pos.y);
+		Vector2 mouse_pos_world = mouse_pos_to_world_pos();
+		int mouse_tile_x = world_pos_to_tile_pos(mouse_pos_world.x);
+		int mouse_tile_y = world_pos_to_tile_pos(mouse_pos_world.y);
 
+		// log("Mouse: %f, %f", mouse_tile_x, mouse_tile_y);
 		// Hitbox handling
 		{
-			
-			// log("%f, %f", mouse_pos.x, mouse_pos.y); // debug
+			float smallest_dist = 0.0;
 
 			for (int i = 0; i < MAX_ENTITIES; i++) {
 				Entity* en = &world->entities[i];
 				if (en->isValid) {
 					Sprite* sprite = get_sprite(en->sprite_id);
-					Range2f bounds = range2f_make_bottom_centre(sprite->size);
-					bounds = range2f_shift(bounds, en->pos);
 
-					Vector4 col = COLOR_GREEN;
-					col.a = 0.4;
-					if (range2f_contains(bounds, mouse_pos)) {
-						col.a = 1.0;
+					int entity_tile_x = world_pos_to_tile_pos(en->pos.x);
+					int entity_tile_y = world_pos_to_tile_pos(en->pos.y);
+
+					float dist = fabs(v2_dist(en->pos, mouse_pos_world));
+				// radius
+				if (dist < TARGET_RADIUS) {
+					
+					if (!world_frame.selected_entity || dist < smallest_dist) {
+						world_frame.selected_entity = en;
+						smallest_dist = dist;
 					}
+					
+				}
 
-					draw_rect(bounds.min, range2f_size(bounds), col);
+				// 	// Hitbox
+				// 	Range2f bounds = range2f_make_bottom_centre(sprite->size);
+				// 	bounds = range2f_shift(bounds, en->pos);
+
+				// 	Vector4 col = COLOR_GREEN;
+				// 	col.a = 0.4;
+				// 	if (range2f_contains(bounds, mouse_pos_world)) {
+				// 		col.a = 1.0;
+				// 	}
+
+				// 	draw_rect(bounds.min, range2f_size(bounds), col);
 				}
 			}
 		}
@@ -268,9 +299,6 @@ int entry(int argc, char **argv) {
 		{
 			int player_tile_x = world_pos_to_tile_pos(player_en->pos.x);
 			int player_tile_y = world_pos_to_tile_pos(player_en->pos.y);
-			const int TILE_RADIUS_X = 40;
-			const int TILE_RADIUS_Y = 20;
-			const Vector4 TILE_COL = v4(0.1, 0.1, 0.1, 0.1);
 
 			for (int x = player_tile_x - TILE_RADIUS_X; x < player_tile_x + TILE_RADIUS_X; x++) {
 				for (int y = player_tile_y - TILE_RADIUS_Y; y < player_tile_y + TILE_RADIUS_Y; y++) {
@@ -283,7 +311,7 @@ int entry(int argc, char **argv) {
 				}
 			}
 
-			draw_rect(v2(mouse_tile_x * TILE_WIDTH, mouse_tile_y * TILE_WIDTH), v2(TILE_WIDTH, TILE_WIDTH), COLOR_RED);
+			// draw_rect(v2((mouse_tile_x * TILE_WIDTH) + (TILE_WIDTH * 0.5), (mouse_tile_y * TILE_WIDTH) + (TILE_WIDTH * 0.5)), v2(TILE_WIDTH, TILE_WIDTH), COLOR_RED);
 		}
 
 		// draw entities
@@ -292,12 +320,19 @@ int entry(int argc, char **argv) {
 			if (en->isValid) {
 				switch (en->type) {
 					default:
-					{
+					{	
+						// xform is like the container for the entity
 						Sprite* sprite = get_sprite(en->sprite_id);
 						Matrix4 xform = m4_scalar(1.0);
+						xform         = m4_translate(xform, v3(0, TILE_WIDTH * -0.5, 0)); // This moves the sprite in relation to the xform matrix
 						xform         = m4_translate(xform, v3(en->pos.x, en->pos.y, 0));
-						xform         = m4_translate(xform, v3(sprite->size.x * .5, 0, 0));
-						draw_image_xform(sprite->image, xform, sprite->size, COLOR_WHITE);
+						xform         = m4_translate(xform, v3(sprite->size.x * -0.5, 0, 0));
+
+						Vector4 col = COLOR_WHITE;
+						if (world_frame.selected_entity == en) {
+							col = COLOR_RED;
+						}
+						draw_image_xform(sprite->image, xform, sprite->size, col);
 
 						draw_text(font, sprint(get_temporary_allocator(), STR("%.2f, %.2f"), en->pos.x, en->pos.y), font_height, en->pos, v2(0.1, 0.1), COLOR_WHITE);
 					}

@@ -492,6 +492,10 @@ inline Vector3f64 v3f64_cross(Vector3f64 a, Vector3f64 b) { return v3f64((a.y*b.
 // v3s64_cross is not reasonable
 // v4s64_cross is not reasonable
 
+inline float v2_dist(Vector2 a, Vector2 b) {
+    Vector2 dist = v2_sub(a, b);
+    return v2_length(dist);
+}
 
 //
 // Conversions
