@@ -1,13 +1,16 @@
 
 #include "range.c"
 
-// constants
+// ===Game constants===
+
 const int TILE_WIDTH = 8;
 const int TILE_RADIUS_X = 40;
 const int TILE_RADIUS_Y = 20;
 const float TARGET_RADIUS = 16.0f;
 const int ROCK_HEALTH = 4;
 const int TREE_HEALTH = 4;
+
+// ===Conversion functions=== 
 
 // Convert world coordinates to tile coordinates
 float world_pos_to_tile_pos(float world_pos) {
@@ -24,6 +27,13 @@ Vector2 round_v2_to_tile_pos(Vector2 v) {
 	v.x = tile_pos_to_world_pos(world_pos_to_tile_pos(v.x));
 	v.y = tile_pos_to_world_pos(world_pos_to_tile_pos(v.y));
 	return v;
+}
+
+// ===Generic utilities===
+
+// 0 - 1
+float sin_breathe(float t, float rate) {
+	return (sin(t * rate) + 1.0) / 2.0;
 }
 
 // Returns true if a and b are within epsilon aka almost equal to each other
@@ -49,6 +59,7 @@ bool animate_v2_to_target(Vector2* value, Vector2 target, float delta_t, float r
 	return x_reached && y_reached;
 }
 
+// ===Game systems===
 
 // Sprite system
 typedef struct Sprite {
@@ -108,6 +119,7 @@ typedef struct Entity {
 	int health;
 	SpriteID sprite_id;
 	ItemID item_id;
+	bool is_item;
 } Entity;
 
 Entity items[ITEM_MAX];
@@ -183,12 +195,14 @@ void setup_item_wood(Entity* en) {
 	en->item_id = ITEM_WOOD;
 	en->sprite_id = SPRITE_WOOD;
 	en->is_breakable = false;
+	en->is_item = true;
 }
 
 void setup_item_rock(Entity* en) {
 	en->item_id = ITEM_ROCK;
 	en->sprite_id = SPRITE_ITEM_ROCK;
 	en->is_breakable = false;
+	en->is_item = true;
 }
 
 
@@ -381,7 +395,7 @@ int entry(int argc, char **argv) {
 			// draw_rect(v2((mouse_tile_x * TILE_WIDTH) + (TILE_WIDTH * 0.5), (mouse_tile_y * TILE_WIDTH) + (TILE_WIDTH * 0.5)), v2(TILE_WIDTH, TILE_WIDTH), COLOR_RED);
 		}
 
-		// draw entities
+		// Rendering
 		{
 			for (int i = 0; i < MAX_ENTITIES; i++) {
 				Entity* en = &world->entities[i];
@@ -392,6 +406,9 @@ int entry(int argc, char **argv) {
 							// xform is like the container for the entity
 							Sprite* sprite = get_sprite(en->sprite_id);
 							Matrix4 xform = m4_scalar(1.0);
+							if (en->is_item) {
+								xform         = m4_translate(xform, v3(0, 2.0 *  sin_breathe(os_get_elapsed_seconds(), 3.0), 0));
+							}
 							xform         = m4_translate(xform, v3(0, TILE_WIDTH * -0.5, 0)); // This moves the sprite in relation to the xform matrix
 							xform         = m4_translate(xform, v3(en->pos.x, en->pos.y, 0));
 							xform         = m4_translate(xform, v3(sprite->image->width * -0.5, 0, 0));
@@ -402,7 +419,7 @@ int entry(int argc, char **argv) {
 							}
 							draw_image_xform(sprite->image, xform, get_sprite_size(sprite), col);
 
-							draw_text(font, sprint(get_temporary_allocator(), STR("%.2f, %.2f"), en->pos.x, en->pos.y), font_height, en->pos, v2(0.1, 0.1), COLOR_WHITE);
+							// draw_text(font, sprint(get_temporary_allocator(), STR("%.2f, %.2f"), en->pos.x, en->pos.y), font_height, en->pos, v2(0.1, 0.1), COLOR_WHITE); // debug
 						}
 					}
 				}
