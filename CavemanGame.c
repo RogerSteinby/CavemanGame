@@ -6,6 +6,8 @@ const int TILE_WIDTH = 8;
 const int TILE_RADIUS_X = 40;
 const int TILE_RADIUS_Y = 20;
 const float TARGET_RADIUS = 16.0f;
+const int ROCK_HEALTH = 4;
+const int TREE_HEALTH = 4;
 
 // Convert world coordinates to tile coordinates
 float world_pos_to_tile_pos(float world_pos) {
@@ -51,14 +53,15 @@ bool animate_v2_to_target(Vector2* value, Vector2 target, float delta_t, float r
 // Sprite system
 typedef struct Sprite {
 	Gfx_Image* image;
-	Vector2 size;
 } Sprite;
 // Sprite id list
 typedef enum SpriteID {
-	SPRITE_nil,
+	SPRITE_NIL,
 	SPRITE_PLAYER,
 	SPRITE_ROCK,
 	SPRITE_TREE,
+	SPRITE_WOOD,
+	SPRITE_ITEM_ROCK,
 	SPRITE_MAX,
 } SpriteID;
 Sprite sprites[SPRITE_MAX];
@@ -70,24 +73,51 @@ Sprite* get_sprite(SpriteID id) {
 	return &sprites[0];
 }
 
+Vector2 get_sprite_size(Sprite* sprite) {
+	return v2(sprite->image->width, sprite->image->height);
+}
+
+
 // Entity system
 // An id list of entity types
 typedef enum EntityArchetype {
-	arch_nil = 0,
-	arch_rock = 1,
-	arch_tree = 2,
-	arch_player = 3,
+	ARCH_NIL = 0,
+	ARCH_ROCK = 1,
+	ARCH_TREE = 2,
+	ARCH_PLAYER = 3,
+	ARCH_ITEM_ROCK = 4,
+	ARCH_WOOD = 5,
+	ARCH_MAX,
 } EntityArchetype;
+
+// Item system
+typedef enum ItemID {
+	ITEM_NIL,
+	ITEM_ROCK,
+	ITEM_WOOD,
+	ITEM_MAX,
+} ItemID;
 
 typedef struct Entity {
 	bool isValid;
 	bool render_sprite;
+	bool is_breakable;
 
 	EntityArchetype type;
 	Vector2 pos;
-
+	int health;
 	SpriteID sprite_id;
+	ItemID item_id;
 } Entity;
+
+Entity items[ITEM_MAX];
+
+Entity* get_item(ItemID id) {
+	if (id >= 0 && id < ITEM_MAX) {
+		return &items[id];
+	}
+	return &items[0];
+}
 
 #define MAX_ENTITIES 1024 // Defines the maximum number of entities allowed in the game
 
@@ -118,31 +148,47 @@ Entity* create_entity() {
 }
 
 // Entity destruction
-void destroy_entity() {
-	memset(entry, 0, sizeof(*entry));
+void destroy_entity(Entity* entity) {
+	memset(entity, 0, sizeof(Entity));
 }
 
 // Entity setup
 void setup_player(Entity* en) {
-	en->type = arch_player;
+	en->type = ARCH_PLAYER;
 	en->sprite_id = SPRITE_PLAYER;
 }
 void setup_rock(Entity* en) {
-	en->type = arch_rock;
+	en->type = ARCH_ROCK;
 	en->pos = v2(get_random_float32_in_range(-200, 200), get_random_float32_in_range(-200, 200));
 	en->pos = round_v2_to_tile_pos(en->pos);
 	en->pos.x += TILE_WIDTH * 0.5f;
 	en->pos.y += TILE_WIDTH * 0.5f;
 	en->sprite_id = SPRITE_ROCK;
-	log("setup_rock: %f, %f", en->pos.x, en->pos.y);
+	en->health = ROCK_HEALTH;
+	en->is_breakable = true;
+	// log("setup_rock: %f, %f", en->pos.x, en->pos.y);
 }
 void setup_tree(Entity* en) {
-	en->type = arch_tree;
+	en->type = ARCH_TREE;
 	en->pos = v2(get_random_float32_in_range(-200, 200), get_random_float32_in_range(-200, 200));
 	en->pos = round_v2_to_tile_pos(en->pos);
 	en->pos.x += TILE_WIDTH * 0.5f;
 	en->pos.y += TILE_WIDTH * 0.5f;
 	en->sprite_id = SPRITE_TREE;
+	en->health = TREE_HEALTH;
+	en->is_breakable = true;
+}
+
+void setup_item_wood(Entity* en) {
+	en->item_id = ITEM_WOOD;
+	en->sprite_id = SPRITE_WOOD;
+	en->is_breakable = false;
+}
+
+void setup_item_rock(Entity* en) {
+	en->item_id = ITEM_ROCK;
+	en->sprite_id = SPRITE_ITEM_ROCK;
+	en->is_breakable = false;
 }
 
 
@@ -198,9 +244,11 @@ int entry(int argc, char **argv) {
 	const u32 font_height = 48;
 
 	// loads game images
-	sprites[SPRITE_PLAYER] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/player.png"), get_heap_allocator()), .size = v2(6, 12) };
-	sprites[SPRITE_ROCK] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/rock.png"), get_heap_allocator()), .size = v2(8, 4) };
-	sprites[SPRITE_TREE] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/tree.png"), get_heap_allocator()), .size = v2(16, 32) };
+	sprites[SPRITE_PLAYER] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/player.png"), get_heap_allocator())};
+	sprites[SPRITE_ROCK] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/rock.png"), get_heap_allocator())};
+	sprites[SPRITE_TREE] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/tree.png"), get_heap_allocator())};
+	sprites[SPRITE_WOOD] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/wood.png"), get_heap_allocator())};
+	sprites[SPRITE_ITEM_ROCK] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/item_rock.png"), get_heap_allocator())};
 
 	Entity* player_en = create_entity();
 	setup_player(player_en);
@@ -256,13 +304,13 @@ int entry(int argc, char **argv) {
 		int mouse_tile_y = world_pos_to_tile_pos(mouse_pos_world.y);
 
 		// log("Mouse: %f, %f", mouse_tile_x, mouse_tile_y);
-		// Hitbox handling
+		// Entity selection
 		{
 			float smallest_dist = 0.0;
 
 			for (int i = 0; i < MAX_ENTITIES; i++) {
 				Entity* en = &world->entities[i];
-				if (en->isValid) {
+				if (en->isValid && en->is_breakable) {
 					Sprite* sprite = get_sprite(en->sprite_id);
 
 					int entity_tile_x = world_pos_to_tile_pos(en->pos.x);
@@ -278,24 +326,43 @@ int entry(int argc, char **argv) {
 					}
 					
 				}
-
-				// 	// Hitbox
-				// 	Range2f bounds = range2f_make_bottom_centre(sprite->size);
-				// 	bounds = range2f_shift(bounds, en->pos);
-
-				// 	Vector4 col = COLOR_GREEN;
-				// 	col.a = 0.4;
-				// 	if (range2f_contains(bounds, mouse_pos_world)) {
-				// 		col.a = 1.0;
-				// 	}
-
-				// 	draw_rect(bounds.min, range2f_size(bounds), col);
+		
 				}
 			}
 		}
 
+		// Click to attack
+		{
+			Entity* selected_entity = world_frame.selected_entity;
+			if (is_key_just_pressed(MOUSE_BUTTON_LEFT)) {
+				consume_key_just_pressed(MOUSE_BUTTON_LEFT);
+				if (selected_entity) {
+					selected_entity->health -= 1;
+				}
+				if (selected_entity && selected_entity->health <= 0) {
+					switch (selected_entity->type) {
+						case ARCH_ROCK: {
+							Entity* en = create_entity();
+							setup_item_rock(en);
+							en->pos = selected_entity->pos;
+						}	break;
+						case ARCH_TREE: {
+							Entity* en = create_entity();
+							setup_item_wood(en);
+							en->pos = selected_entity->pos;
+						}	break;
+						default: {
+							
+						}	break;
+						selected_entity = 0;
+					}
+					destroy_entity(selected_entity);
+				}
+			}
+
+		}
+
 		// tile rendering
-		
 		{
 			int player_tile_x = world_pos_to_tile_pos(player_en->pos.x);
 			int player_tile_y = world_pos_to_tile_pos(player_en->pos.y);
@@ -315,52 +382,54 @@ int entry(int argc, char **argv) {
 		}
 
 		// draw entities
-		for (int i = 0; i < MAX_ENTITIES; i++) {
-			Entity* en = &world->entities[i];
-			if (en->isValid) {
-				switch (en->type) {
-					default:
-					{	
-						// xform is like the container for the entity
-						Sprite* sprite = get_sprite(en->sprite_id);
-						Matrix4 xform = m4_scalar(1.0);
-						xform         = m4_translate(xform, v3(0, TILE_WIDTH * -0.5, 0)); // This moves the sprite in relation to the xform matrix
-						xform         = m4_translate(xform, v3(en->pos.x, en->pos.y, 0));
-						xform         = m4_translate(xform, v3(sprite->size.x * -0.5, 0, 0));
+		{
+			for (int i = 0; i < MAX_ENTITIES; i++) {
+				Entity* en = &world->entities[i];
+				if (en->isValid) {
+					switch (en->type) {
+						default:
+						{	
+							// xform is like the container for the entity
+							Sprite* sprite = get_sprite(en->sprite_id);
+							Matrix4 xform = m4_scalar(1.0);
+							xform         = m4_translate(xform, v3(0, TILE_WIDTH * -0.5, 0)); // This moves the sprite in relation to the xform matrix
+							xform         = m4_translate(xform, v3(en->pos.x, en->pos.y, 0));
+							xform         = m4_translate(xform, v3(sprite->image->width * -0.5, 0, 0));
 
-						Vector4 col = COLOR_WHITE;
-						if (world_frame.selected_entity == en) {
-							col = COLOR_RED;
+							Vector4 col = COLOR_WHITE;
+							if (world_frame.selected_entity == en) {
+								col = COLOR_RED;
+							}
+							draw_image_xform(sprite->image, xform, get_sprite_size(sprite), col);
+
+							draw_text(font, sprint(get_temporary_allocator(), STR("%.2f, %.2f"), en->pos.x, en->pos.y), font_height, en->pos, v2(0.1, 0.1), COLOR_WHITE);
 						}
-						draw_image_xform(sprite->image, xform, sprite->size, col);
-
-						draw_text(font, sprint(get_temporary_allocator(), STR("%.2f, %.2f"), en->pos.x, en->pos.y), font_height, en->pos, v2(0.1, 0.1), COLOR_WHITE);
 					}
 				}
 			}
-		}
+}
+		// player movement
+		{
+			Vector2 input_axis = v2(0, 0);
+			if (is_key_down('A')) {
+				input_axis.x -= 1.0;
+			}
+			if (is_key_down('D')) {
+				input_axis.x += 1.0;
+			}
+			if (is_key_down('S')) {
+				input_axis.y -= 1.0;
+			}
+			if (is_key_down('W')) {
+				input_axis.y += 1.0;
+			}
+			
+			// normalize input axis
+			input_axis = v2_normalize(input_axis);
 
-		// player movement input
-		Vector2 input_axis = v2(0, 0);
-		if (is_key_down('A')) {
-			input_axis.x -= 1.0;
+			// player_en->pos = player_en->pos + (input_axis * 10.0);
+			player_en->pos = v2_add(player_en->pos, v2_mulf(input_axis, player_speed * delta));
 		}
-		if (is_key_down('D')) {
-			input_axis.x += 1.0;
-		}
-		if (is_key_down('S')) {
-			input_axis.y -= 1.0;
-		}
-		if (is_key_down('W')) {
-			input_axis.y += 1.0;
-		}
-		
-		// normalize input axis
-		input_axis = v2_normalize(input_axis);
-
-		// player_en->pos = player_en->pos + (input_axis * 10.0);
-		player_en->pos = v2_add(player_en->pos, v2_mulf(input_axis, player_speed * delta));
-		
 		
 		gfx_update();
 	}
