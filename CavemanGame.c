@@ -7,6 +7,7 @@ const int TILE_WIDTH = 8;
 const int TILE_RADIUS_X = 40;
 const int TILE_RADIUS_Y = 20;
 const float TARGET_RADIUS = 16.0f;
+const float PICKUP_RADIUS = 12.0f;
 const int ROCK_HEALTH = 4;
 const int TREE_HEALTH = 4;
 
@@ -124,6 +125,11 @@ typedef struct Entity {
 
 Entity items[ITEM_MAX];
 
+typedef struct ItemData {
+	int amount;
+} ItemData;
+
+
 Entity* get_item(ItemID id) {
 	if (id >= 0 && id < ITEM_MAX) {
 		return &items[id];
@@ -132,15 +138,18 @@ Entity* get_item(ItemID id) {
 }
 
 #define MAX_ENTITIES 1024 // Defines the maximum number of entities allowed in the game
+#define MAX_INVENTORY_ITEMS ITEM_MAX  // Defines the maximum number of items allowed in the inventory
 
 // World. contains list of entities
 typedef struct World{
 	Entity entities[MAX_ENTITIES];
+	ItemData inventory_items[ITEM_MAX];
 } World;
 World* world = 0; // Initializes the world
 
 typedef struct WorldFrame {
 	Entity* selected_entity;
+
 } WorldFrame;
 
 WorldFrame world_frame;
@@ -163,6 +172,11 @@ Entity* create_entity() {
 void destroy_entity(Entity* entity) {
 	memset(entity, 0, sizeof(Entity));
 }
+
+// Test item adding
+// {
+// 	world->inventory_items[ITEM_ROCK].amount = 5;
+// }
 
 // Entity setup
 void setup_player(Entity* en) {
@@ -345,6 +359,20 @@ int entry(int argc, char **argv) {
 			}
 		}
 
+		// Item pickup
+		{
+			for (int i = 0; i < MAX_ENTITIES; i++) {
+				Entity* en = &world->entities[i];
+				if (en->isValid && en->is_item) {
+					if (fabs(v2_dist(en->pos, player_en->pos)) < PICKUP_RADIUS) {
+						 //pickup
+						world->inventory_items[en->item_id].amount += 1;
+						log("picked up item %d", en->item_id);
+						destroy_entity(en);
+					}
+				}
+			}
+		}
 		// Click to attack
 		{
 			Entity* selected_entity = world_frame.selected_entity;
