@@ -10,8 +10,13 @@ const float TARGET_RADIUS = 16.0f;
 const float PICKUP_RADIUS = 12.0f;
 const int ROCK_HEALTH = 4;
 const int TREE_HEALTH = 4;
+const float SCREEN_WIDTH = 240.0f;
+const float SCREEN_HEIGHT = 160.0f;
 
-// ===Conversion functions=== 
+// ===Game Variables===
+bool draw_inventory = false;
+
+// ===Conversion functions===
 
 // Convert world coordinates to tile coordinates
 float world_pos_to_tile_pos(float world_pos) {
@@ -29,6 +34,11 @@ Vector2 round_v2_to_tile_pos(Vector2 v) {
 	v.y = tile_pos_to_world_pos(world_pos_to_tile_pos(v.y));
 	return v;
 }
+
+// ==Array utilities==
+// void* array_add(){
+
+// }
 
 // ===Generic utilities===
 
@@ -60,7 +70,42 @@ bool animate_v2_to_target(Vector2* value, Vector2 target, float delta_t, float r
 	return x_reached && y_reached;
 }
 
+Range2f quad_to_range(Draw_Quad* quad) {
+	return (Range2f){quad->bottom_left, quad->top_right};
+}
+
+Vector2 range2f_get_center(Range2f range) {
+	return (Vector2) {(range.max.x - range.min.x) * 0.5 + range.min.x, (range.max.y - range.min.y) * 0.5 + range.min.y, };
+}
+
+// ===Scuffed Functions===
+
+Draw_Quad ndc_quad_to_screen_quad(Draw_Quad ndc_quad) {
+	// Assuming these are screen space matrices
+	Matrix4 proj = draw_frame.projection;
+	Matrix4 view = draw_frame.camera_xform;
+	
+	Matrix4 ndc_to_screen_space = m4_identity();
+	ndc_to_screen_space = m4_mul(ndc_to_screen_space, m4_inverse(proj));
+	ndc_to_screen_space = m4_mul(ndc_to_screen_space, view);
+
+	ndc_quad.bottom_left = m4_transform(ndc_to_screen_space, v4(v2_expand(ndc_quad.bottom_left), 0, 1)).xy;
+	ndc_quad.top_right = m4_transform(ndc_to_screen_space, v4(v2_expand(ndc_quad.top_right), 0, 1)).xy;
+	ndc_quad.top_left = m4_transform(ndc_to_screen_space, v4(v2_expand(ndc_quad.top_left), 0, 1)).xy;
+	ndc_quad.bottom_right = m4_transform(ndc_to_screen_space, v4(v2_expand(ndc_quad.bottom_right), 0, 1)).xy;
+
+	return ndc_quad;
+}
+
 // ===Game systems===
+
+// Item system
+typedef enum ItemID {
+	ITEM_NIL,
+	ITEM_ROCK,
+	ITEM_WOOD,
+	ITEM_MAX,
+} ItemID;
 
 // Sprite system
 typedef struct Sprite {
@@ -72,8 +117,9 @@ typedef enum SpriteID {
 	SPRITE_PLAYER,
 	SPRITE_ROCK,
 	SPRITE_TREE,
-	SPRITE_WOOD,
+	SPRITE_DIVIDER, // All item sprites should come after this
 	SPRITE_ITEM_ROCK,
+	SPRITE_WOOD,
 	SPRITE_MAX,
 } SpriteID;
 Sprite sprites[SPRITE_MAX];
@@ -81,6 +127,16 @@ Sprite sprites[SPRITE_MAX];
 Sprite* get_sprite(SpriteID id) {
 	if (id >= 0 && id < SPRITE_MAX) {
 		return &sprites[id];
+	}
+	return &sprites[0];
+}
+
+Sprite* get_item_sprite(SpriteID id) {
+	if (id >= 0 && id < ITEM_MAX) {
+		int s_id = SPRITE_DIVIDER + id;
+		if (&sprites[s_id] != &sprites[SPRITE_DIVIDER]) {
+			return &sprites[SPRITE_DIVIDER + id];
+		}
 	}
 	return &sprites[0];
 }
@@ -102,13 +158,6 @@ typedef enum EntityArchetype {
 	ARCH_MAX,
 } EntityArchetype;
 
-// Item system
-typedef enum ItemID {
-	ITEM_NIL,
-	ITEM_ROCK,
-	ITEM_WOOD,
-	ITEM_MAX,
-} ItemID;
 
 typedef struct Entity {
 	bool isValid;
@@ -135,6 +184,19 @@ Entity* get_item(ItemID id) {
 		return &items[id];
 	}
 	return &items[0];
+}
+
+string get_item_name (ItemID id) {
+	switch (id) {
+		case ITEM_NIL:
+			return STR("Nil");
+		case ITEM_ROCK:
+			return STR("Rock");
+		case ITEM_WOOD:
+			return STR("Wood");
+		default:
+			return STR("Unknown");
+	}
 }
 
 #define MAX_ENTITIES 1024 // Defines the maximum number of entities allowed in the game
@@ -244,6 +306,20 @@ Vector2 mouse_pos_to_world_pos() {
 	return (Vector2) {worldPos.x, worldPos.y};
 }
 
+Vector2 mouse_pos_to_ndc_pos(){
+	// get mouse position, projection, view, and window dimensions
+	float mouseX = input_frame.mouse_x;
+	float mouseY = input_frame.mouse_y;
+	float windowWidth = window.width;
+	float windowHeight = window.height;
+
+	// normalize mouse coordinates
+	float ndcX = (mouseX / (windowWidth * 0.5f)) - 1.0f;
+	float ndcY = (mouseY / (windowHeight * 0.5f)) - 1.0f;
+
+	return (Vector2) {ndcX, ndcY};
+}
+
 
 // Game entry point
 int entry(int argc, char **argv) {
@@ -272,6 +348,7 @@ int entry(int argc, char **argv) {
 	const u32 font_height = 48;
 
 	// loads game images
+	sprites[SPRITE_NIL] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/missing_texture.png"), get_heap_allocator())};
 	sprites[SPRITE_PLAYER] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/player.png"), get_heap_allocator())};
 	sprites[SPRITE_ROCK] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/rock.png"), get_heap_allocator())};
 	sprites[SPRITE_TREE] = (Sprite){ .image = load_image_from_disk(fixed_string("assets/tree.png"), get_heap_allocator())};
@@ -299,15 +376,25 @@ int entry(int argc, char **argv) {
 	float zoom = 0.1875;
 	Vector2 camera_pos;
 
+	// item debug
+	{
+		world->inventory_items[ITEM_ROCK].amount = 10;
+		world->inventory_items[ITEM_WOOD].amount = 10;
+	}
+
 	// Game loop
 	while (!window.should_close) {
-		// should close the window if escape is pressed
 		reset_temporary_storage();
 		world_frame = (WorldFrame){0};
 
 		// should close the window if escape is pressed (doesnt work)
 		if (is_key_just_pressed(KEY_ESCAPE)) {
 			window.should_close = true;
+		}
+
+		// Toggles inventory
+		if (is_key_just_pressed(KEY_I) || is_key_just_pressed(KEY_i)) {
+			draw_inventory = !draw_inventory;
 		}
 		os_update();
 
@@ -316,7 +403,10 @@ int entry(int argc, char **argv) {
 		float64 delta = now - last_time;
 		if ((int)now != (int)last_time) log("%.2f FPS\n%.2fms", 1.0/(now-last_time), (now-last_time)*1000);
 		last_time = now;
+		
+		// draw_frame.projection = m4_make_orthographic_projection(window.width * -0.5f, window.width * 0.5f, window.height * -0.5f, window.height * 0.5f, -1.0, 1.0);
 
+		
 		// Camera
 		{
 			Vector2 target_pos = player_en->pos;
@@ -358,53 +448,8 @@ int entry(int argc, char **argv) {
 				}
 			}
 		}
-
-		// Item pickup
-		{
-			for (int i = 0; i < MAX_ENTITIES; i++) {
-				Entity* en = &world->entities[i];
-				if (en->isValid && en->is_item) {
-					if (fabs(v2_dist(en->pos, player_en->pos)) < PICKUP_RADIUS) {
-						 //pickup
-						world->inventory_items[en->item_id].amount += 1;
-						log("picked up item %d", en->item_id);
-						destroy_entity(en);
-					}
-				}
-			}
-		}
-		// Click to attack
-		{
-			Entity* selected_entity = world_frame.selected_entity;
-			if (is_key_just_pressed(MOUSE_BUTTON_LEFT)) {
-				consume_key_just_pressed(MOUSE_BUTTON_LEFT);
-				if (selected_entity) {
-					selected_entity->health -= 1;
-				}
-				if (selected_entity && selected_entity->health <= 0) {
-					switch (selected_entity->type) {
-						case ARCH_ROCK: {
-							Entity* en = create_entity();
-							setup_item_rock(en);
-							en->pos = selected_entity->pos;
-						}	break;
-						case ARCH_TREE: {
-							Entity* en = create_entity();
-							setup_item_wood(en);
-							en->pos = selected_entity->pos;
-						}	break;
-						default: {
-							
-						}	break;
-						selected_entity = 0;
-					}
-					destroy_entity(selected_entity);
-				}
-			}
-
-		}
-
-		// tile rendering
+		
+		// Tile rendering
 		{
 			int player_tile_x = world_pos_to_tile_pos(player_en->pos.x);
 			int player_tile_y = world_pos_to_tile_pos(player_en->pos.y);
@@ -423,7 +468,7 @@ int entry(int argc, char **argv) {
 			// draw_rect(v2((mouse_tile_x * TILE_WIDTH) + (TILE_WIDTH * 0.5), (mouse_tile_y * TILE_WIDTH) + (TILE_WIDTH * 0.5)), v2(TILE_WIDTH, TILE_WIDTH), COLOR_RED);
 		}
 
-		// Rendering
+		// Entity rendering
 		{
 			for (int i = 0; i < MAX_ENTITIES; i++) {
 				Entity* en = &world->entities[i];
@@ -452,8 +497,162 @@ int entry(int argc, char **argv) {
 					}
 				}
 			}
-}
-		// player movement
+		}
+
+		// Item pickup
+		{
+			for (int i = 0; i < MAX_ENTITIES; i++) {
+				Entity* en = &world->entities[i];
+				if (en->isValid && en->is_item) {
+					if (fabs(v2_dist(en->pos, player_en->pos)) < PICKUP_RADIUS) {
+						 //pickup
+						world->inventory_items[en->item_id].amount += 1;
+						log("picked up item %d", en->item_id); // debug
+						destroy_entity(en);
+					}
+				}
+			}
+		}
+
+		// Click to attack
+		{
+			Entity* selected_entity = world_frame.selected_entity;
+			if (is_key_just_pressed(MOUSE_BUTTON_LEFT)) {
+				consume_key_just_pressed(MOUSE_BUTTON_LEFT);
+				if (selected_entity) {
+					selected_entity->health -= 1;
+				}
+				if (selected_entity && selected_entity->health <= 0) {
+					switch (selected_entity->type) {
+						case ARCH_ROCK: {
+							Entity* en = create_entity();
+							setup_item_rock(en);
+							en->pos = selected_entity->pos;
+						}	break;
+						case ARCH_TREE: {
+							Entity* en = create_entity();
+							setup_item_wood(en);
+							en->pos = selected_entity->pos;
+						}	break;
+						default: {
+							
+						}	break;
+						selected_entity = 0;
+					}
+					destroy_entity(selected_entity);
+				}
+			}
+		}
+	
+		// UI rendering //TODO: ITEM Y AXIS WRAPPING=
+		{
+				// Inventory
+				if (draw_inventory){
+				draw_frame.camera_xform = m4_scalar(1.0);
+				draw_frame.projection = m4_make_orthographic_projection(0, SCREEN_WIDTH, 0, SCREEN_HEIGHT, -1, 10);
+				
+				float y_pos = 100.0;
+				
+				int item_count = 0;
+				for (int i = 0; i < ITEM_MAX; i++) {
+					ItemData* item = &world->inventory_items[i];
+					if (item->amount > 0) {
+						item_count += 1;
+					}
+				}
+				
+				Vector4 bg_box_color = {0, 0, 0, 0.4};
+				float icon_width = 10.0;
+				float x_padding = 4.0;
+				float y_padding = 4.0;
+				float icon_width_total = icon_width + x_padding;
+
+				const int icon_row_count = 8;
+
+				float box_width = icon_row_count * icon_width_total;
+
+				float x_start_pos = (SCREEN_WIDTH - box_width) * 0.5;
+				
+				// Draw inventory background
+				{
+					Matrix4 xform = m4_make_scale(v3(1.0, 1.0, 1.0));
+					xform = m4_translate(xform, v3(x_start_pos, y_pos, 0));
+					draw_rect_xform(xform, v2(box_width, icon_width_total), bg_box_color);
+				}
+
+				int slot_index = 0;
+				for (int i = 0; i < ITEM_MAX; i++) {
+					ItemData* item = &world->inventory_items[i];
+					if (item->amount > 0) {
+						float slot_index_offset = slot_index * icon_width_total;
+
+						Matrix4 xform = m4_scalar(1.0);
+						xform = m4_translate(xform, v3((x_start_pos + slot_index_offset) + (x_padding * 0.5), y_pos + (y_padding * 0.5), 0)); // This is where i deviated from the tutorial
+						
+						Draw_Quad* quad = draw_rect_xform(xform, v2(icon_width, icon_width), v4(0.5, 0.5, 0.5, 0.5));
+					
+						Matrix4 bottom_left_xform = xform;
+						
+						Sprite* sprite = get_item_sprite(i);
+
+						xform = m4_translate(xform, v3(icon_width * 0.5, icon_width * 0.5, 0));
+
+						// Inventory item selection
+						{
+							Range2f box = quad_to_range(quad); 
+							
+
+							if (range2f_contains(box, mouse_pos_to_ndc_pos())) {
+								// Inventory aesthetics (rotate and scale) for selection
+								{
+									float scale_adjust = 0.1 * sin_breathe(os_get_elapsed_seconds(), 4.0);
+									xform = m4_scale(xform, v3(1.0 + scale_adjust, 1.0 + scale_adjust, 1.0));
+
+									float angle_adjust = PI32 * -0.05 * sin_breathe(os_get_elapsed_seconds(), 2.0);
+									xform = m4_rotate_z(xform, angle_adjust);
+								// tooltip
+								{
+									Draw_Quad screen_quad = ndc_quad_to_screen_quad(*quad);
+									Range2f screen_range = quad_to_range(&screen_quad);
+									Vector2 icon_center = range2f_get_center(screen_range);
+									Matrix4 xform = m4_scalar(1.0);
+									Vector2 box_size = v2(16, 8);
+									
+									xform = m4_translate(xform, v3(icon_center.x, icon_center.y, 0));
+									xform = m4_translate(xform, v3(box_size.x * -0.5, -box_size.y * 2, 0));
+
+									draw_rect_xform(xform, box_size, bg_box_color);
+									// draw_text_xform(font, sprint(get_temporary_allocator(), STR("item id: %d"), i), font_height, xform, v2(0.1, 0.1), v4(1, 1, 1, 1.0)); //debug
+
+									string title = get_item_name(i);
+
+									Gfx_Text_Metrics metrics = measure_text(font, title, font_height, v2(0.1, 0.1));
+									Vector2 draw_pos = icon_center;
+
+									draw_pos = v2_sub(draw_pos, metrics.visual_pos_min);
+									draw_pos = v2_add(draw_pos, v2_mul(metrics.visual_size, v2(-0.5, -1)));
+									
+									draw_pos = v2_add(draw_pos, v2(0, icon_width * -1));
+
+									draw_text(font, title, font_height, draw_pos, v2(0.1, 0.1), v4(1, 1, 1, 1.0));
+								}
+								}
+								
+							}
+						}
+
+						xform = m4_translate(xform, v3(get_sprite_size(sprite).x * -0.5, get_sprite_size(sprite).y * -0.5, 0));
+
+						draw_image_xform(sprite->image, xform, get_sprite_size(sprite), COLOR_WHITE);
+						draw_text_xform(font, sprint(get_temporary_allocator(), STR("%d"), item->amount), font_height, bottom_left_xform, v2(0.1, 0.1), v4(1, 1, 1, 1.0));
+
+						slot_index += 1;
+					}
+				}
+			}
+		}
+
+		// Player movement
 		{
 			Vector2 input_axis = v2(0, 0);
 			if (is_key_down('A')) {

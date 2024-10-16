@@ -82,6 +82,10 @@ typedef enum Input_Key_Code {
 
     // The letters A-Z live in here as well and may be returned
     // by keyboard events.
+	KEY_E = 69,
+	KEY_I = 73,
+	KEY_e = 101,
+	KEY_i = 105,
 
     KEY_DELETE      = 127,
 
